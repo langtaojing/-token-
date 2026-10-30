@@ -25,7 +25,7 @@ def initialize():
 def now(): return datetime.now(timezone.utc)
 
 def hash_password(password):
-    if len(password) < 12: raise ValueError("Password must be at least 12 characters.")
+    if not password: raise ValueError("Password cannot be empty.")
     salt=secrets.token_bytes(16); iterations=390000; digest=hashlib.pbkdf2_hmac("sha256",password.encode(),salt,iterations)
     return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
 
@@ -38,9 +38,21 @@ def verify_password(password, encoded):
     except (ValueError,TypeError): return False
 
 def create_user(username,password,role="member",daily_requests=20,daily_tokens=20000):
+    if not username or not username.strip(): raise ValueError("Username cannot be empty.")
     with connect() as db:
         cur=db.execute("INSERT INTO users(username,password_hash,role,daily_requests,daily_tokens,created_at) VALUES(?,?,?,?,?,?)",(username,hash_password(password),role,daily_requests,daily_tokens,now().isoformat()))
         return int(cur.lastrowid)
+
+def list_users():
+    with connect() as db: return db.execute("SELECT id,username,role,active,daily_requests,daily_tokens,created_at FROM users ORDER BY id").fetchall()
+
+def update_user(user_id, daily_requests, daily_tokens, active=None):
+    with connect() as db:
+        if active is None: db.execute("UPDATE users SET daily_requests=?,daily_tokens=? WHERE id=?", (daily_requests,daily_tokens,user_id))
+        else: db.execute("UPDATE users SET daily_requests=?,daily_tokens=?,active=? WHERE id=?", (daily_requests,daily_tokens,int(active),user_id))
+
+def username_exists(username):
+    with connect() as db: return db.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone() is not None
 
 def authenticate(username,password):
     with connect() as db: user=db.execute("SELECT * FROM users WHERE username=?",(username,)).fetchone()

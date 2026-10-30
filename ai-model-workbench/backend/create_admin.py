@@ -8,7 +8,7 @@ with connect() as db:
 if exists:
     print('An admin already exists.')
 else:
-    username=input('Admin username: ').strip(); password=getpass.getpass('Admin password (12+ chars): '); repeat=getpass.getpass('Repeat password: ')
+    username=input('Admin username: ').strip(); password=getpass.getpass('Admin password: '); repeat=getpass.getpass('Repeat password: ')
     if password != repeat: raise SystemExit('Passwords do not match.')
     try: create_user(username,password,'admin',100,100000); print('Admin created.')
     except (ValueError,sqlite3.IntegrityError) as exc: raise SystemExit(str(exc))
