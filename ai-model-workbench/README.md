@@ -27,3 +27,15 @@
 5. 用真实价格表替换演示费用，补充限流、预算告警和数据导出。
 
 请勿把 API 密钥、个人数据或客户数据提交到 GitHub。
+
+## 本机接入 MiniMax（给自己使用）
+
+1. 安装 Python 3.11 或更高版本。
+2. 将 `.env.example` 复制为 `.env`。
+3. 在 MiniMax 控制台创建接口密钥，并只填入 `.env` 的 `MINIMAX_API_KEY`。
+4. 在 PowerShell 运行 `./run-local.ps1`。
+5. 浏览器打开 `http://127.0.0.1:8000`。
+
+后端会从 `.env` 读取密钥，前端只访问本机的 `/api/chat`，不会把密钥发送到浏览器。`/api/health` 可检查后端是否读取到密钥，但不会返回密钥内容。
+
+首次启动会在项目目录创建 `.venv` 并安装 `backend/requirements.txt`。如果看到“API Key 尚未配置”，说明 `.env` 没有保存到项目根目录，或变量名不是 `MINIMAX_API_KEY`。
