@@ -11,6 +11,7 @@ from fastapi import Cookie, FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from .orchestrator import ProviderError, run_orchestration
 from .store import authenticate, connect, create_session, create_user, delete_session, finish_call, initialize, list_users, reserve_call, update_user, usage, user_for_session, username_exists
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -99,22 +100,13 @@ async def chat(request: ChatRequest, ai_team_session: str | None = Cookie(defaul
     day = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).date().isoformat()
     try: call_id = reserve_call(user, MINIMAX_MODEL, day)
     except ValueError as exc: raise HTTPException(429, str(exc)) from None
-    started = perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            r = await client.post(MINIMAX_URL, json={"model": MINIMAX_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False}, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}); r.raise_for_status(); data = r.json()
-    except httpx.TimeoutException:
-        finish_call(call_id, "failed"); raise HTTPException(504, "模型请求超时。") from None
-    except httpx.HTTPStatusError:
-        finish_call(call_id, "failed"); raise HTTPException(502, "模型服务返回错误，请稍后重试。") from None
-    except (httpx.RequestError, ValueError):
-        finish_call(call_id, "failed"); raise HTTPException(502, "无法连接模型服务。") from None
-    choices = data.get("choices") or []; answer = (choices[0].get("message") or {}).get("content") if choices else None; usage_data = data.get("usage") or {}
-    if not isinstance(answer, str) or not answer.strip():
-        finish_call(call_id, "failed"); raise HTTPException(502, "模型没有返回文本回答。")
-    total = int(usage_data.get("total_tokens") or 0); latency = round((perf_counter()-started)*1000)
-    finish_call(call_id, "success", int(usage_data.get("prompt_tokens") or 0), int(usage_data.get("completion_tokens") or 0), total, latency)
-    return {"answer": answer, "model": data.get("model") or MINIMAX_MODEL, "usage": {"total_tokens": total}, "latency_ms": latency}
+        result = await run_orchestration(prompt)
+    except ProviderError as exc:
+        finish_call(call_id, "failed")
+        raise HTTPException(exc.status, str(exc)) from None
+    finish_call(call_id, "success", result.prompt_tokens, result.completion_tokens, result.total_tokens, result.latency_ms)
+    return {"answer": result.answer, "model": result.model, "plan": result.plan, "stages": result.stages, "usage": {"total_tokens": result.total_tokens}, "latency_ms": result.latency_ms}
 
 @app.get("/")
 async def index(): return FileResponse(ROOT / "index.html")
