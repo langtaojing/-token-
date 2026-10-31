@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import argparse
 import socket
 import subprocess
 import sys
@@ -23,7 +24,11 @@ EDGE_CANDIDATES = [
 ]
 
 
-def find_free_port() -> int:
+def find_free_port(preferred: int | None = None) -> int:
+    if preferred:
+        with socket.socket() as sock:
+            try: sock.bind(("127.0.0.1", preferred)); return preferred
+            except OSError: pass
     for port in range(8000, 8011):
         with socket.socket() as sock:
             try:
@@ -59,6 +64,11 @@ def stop_backend(process: subprocess.Popen | None) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--master", action="store_true")
+    args = parser.parse_args()
+    if Path(sys.argv[0]).stem.lower() == "master":
+        args.master = True
     if not PROJECT.exists():
         raise RuntimeError(f"项目目录不存在：{PROJECT}")
     if not PYTHON.exists():
@@ -67,14 +77,16 @@ def main() -> int:
     if check.returncode != 0:
         raise RuntimeError("项目虚拟环境缺少 uvicorn，请先运行 run-local.ps1。")
     DATA.mkdir(parents=True, exist_ok=True)
-    port = find_free_port()
+    port = find_free_port(9000 if args.master else None)
     url = f"http://127.0.0.1:{port}"
     log_handle = LOG.open("w", encoding="utf-8")
     err_handle = ERR.open("w", encoding="utf-8")
+    env = os.environ.copy()
+    if args.master: env["AI_TEAM_HUB_ADMIN_ONLY"] = "1"
     backend = subprocess.Popen(
         [str(PYTHON), "-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", str(port)],
         cwd=str(PROJECT), stdout=log_handle, stderr=err_handle,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=env,
     )
     STATE.write_text(json.dumps({"pid": backend.pid, "port": port}, ensure_ascii=False), encoding="utf-8")
     try:
