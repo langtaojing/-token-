@@ -20,6 +20,8 @@ def initialize():
         CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, day TEXT NOT NULL, model TEXT NOT NULL, prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0, total_tokens INTEGER NOT NULL DEFAULT 0, latency_ms INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_calls_user_day ON calls(user_id, day);
+        CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, original_name TEXT NOT NULL, stored_name TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'uploaded', created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_files_user ON files(user_id, created_at);
         """)
 
 def now(): return datetime.now(timezone.utc)
@@ -96,3 +98,17 @@ def finish_call(call_id,status,prompt_tokens=0,completion_tokens=0,total_tokens=
 
 def record_call(db,user_id,model,status,prompt_tokens=0,completion_tokens=0,total_tokens=0,latency_ms=0):
     n=now(); db.execute("INSERT INTO calls(user_id,created_at,day,model,prompt_tokens,completion_tokens,total_tokens,latency_ms,status) VALUES(?,?,?,?,?,?,?,?,?)",(user_id,n.isoformat(),n.date().isoformat(),model,prompt_tokens,completion_tokens,total_tokens,latency_ms,status))
+
+def add_file(user_id, original_name, stored_name, content_type, size_bytes):
+    with connect() as db:
+        cur=db.execute("INSERT INTO files(user_id,original_name,stored_name,content_type,size_bytes,created_at) VALUES(?,?,?,?,?,?)",(user_id,original_name,stored_name,content_type,size_bytes,now().isoformat()))
+        return int(cur.lastrowid)
+
+def list_files(user_id):
+    with connect() as db: return db.execute("SELECT id,original_name,content_type,size_bytes,status,created_at FROM files WHERE user_id=? ORDER BY id DESC",(user_id,)).fetchall()
+
+def get_file(user_id, file_id):
+    with connect() as db: return db.execute("SELECT * FROM files WHERE id=? AND user_id=?",(file_id,user_id)).fetchone()
+
+def remove_file(user_id, file_id):
+    with connect() as db: db.execute("DELETE FROM files WHERE id=? AND user_id=?",(file_id,user_id))

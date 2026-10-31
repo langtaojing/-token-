@@ -7,12 +7,12 @@ from time import perf_counter
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Cookie, FastAPI, HTTPException, Response
+from fastapi import Cookie, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .orchestrator import ProviderError, run_orchestration
-from .store import authenticate, connect, create_session, create_user, delete_session, finish_call, initialize, list_users, reserve_call, update_user, usage, user_for_session, username_exists
+from .store import add_file, authenticate, connect, create_session, create_user, delete_session, finish_call, get_file, initialize, list_files, list_users, remove_file, reserve_call, update_user, usage, user_for_session, username_exists
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -38,9 +38,14 @@ class UserAdminRequest(BaseModel):
     daily_tokens: int = Field(ge=1, le=1_000_000)
     active: bool | None = None
 
+ALLOWED_UPLOADS = {".pdf", ".docx", ".txt", ".md", ".mp4", ".mov", ".mp3", ".wav"}
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+
 def current_user(session: str | None):
     user = user_for_session(session)
     if not user: raise HTTPException(401, "请先登录。")
+    if os.getenv("AI_TEAM_HUB_ADMIN_ONLY") == "1" and user["role"] != "admin":
+        raise HTTPException(403, "此入口仅限管理员使用。")
     return user
 
 @app.get("/api/health")
@@ -57,6 +62,7 @@ async def login(request: LoginRequest, response: Response):
 
 @app.post("/api/register")
 async def register(request: RegisterRequest, response: Response):
+    if os.getenv("AI_TEAM_HUB_ADMIN_ONLY") == "1": raise HTTPException(403, "管理员入口不开放注册。")
     username = request.username.strip()
     if request.password != request.repeat: raise HTTPException(400, "两次密码不一致。")
     if not username: raise HTTPException(400, "用户名不能为空。")
@@ -76,6 +82,34 @@ async def me(ai_team_session: str | None = Cookie(default=None)):
     user = current_user(ai_team_session)
     with connect() as db: requests_used, tokens_used = usage(db, user["id"], __import__("datetime").datetime.now(__import__("datetime").timezone.utc).date().isoformat())
     return {"username": user["username"], "role": user["role"], "daily_requests": user["daily_requests"], "daily_tokens": user["daily_tokens"], "requests_used": requests_used, "tokens_used": tokens_used}
+
+@app.get("/api/files")
+async def files(ai_team_session: str | None = Cookie(default=None)):
+    user = current_user(ai_team_session)
+    return {"files": [dict(row) for row in list_files(user["id"])]}
+
+@app.post("/api/files")
+async def upload_file(file: UploadFile = File(...), ai_team_session: str | None = Cookie(default=None)):
+    user = current_user(ai_team_session)
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in ALLOWED_UPLOADS: raise HTTPException(400, "暂不支持这种文件类型。")
+    upload_dir = ROOT / "data" / "uploads" / str(user["id"]); upload_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = f"{__import__('secrets').token_hex(12)}{suffix}"; destination = upload_dir / safe_name; total = 0
+    with destination.open("wb") as output:
+        while chunk := await file.read(1024 * 1024):
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                destination.unlink(missing_ok=True); raise HTTPException(413, "文件不能超过 500 MB。")
+            output.write(chunk)
+    file_id = add_file(user["id"], file.filename or "unnamed", safe_name, file.content_type or "application/octet-stream", total)
+    return {"id": file_id, "name": file.filename, "size_bytes": total, "status": "uploaded"}
+
+@app.delete("/api/files/{file_id}")
+async def delete_uploaded_file(file_id: int, ai_team_session: str | None = Cookie(default=None)):
+    user = current_user(ai_team_session); row = get_file(user["id"], file_id)
+    if not row: raise HTTPException(404, "文件不存在。")
+    (ROOT / "data" / "uploads" / str(user["id"]) / row["stored_name"]).unlink(missing_ok=True); remove_file(user["id"], file_id)
+    return {"ok": True}
 
 @app.get("/api/admin/users")
 async def admin_users(ai_team_session: str | None = Cookie(default=None)):
@@ -116,3 +150,4 @@ async def styles(): return FileResponse(ROOT / "styles.css")
 
 @app.get("/trial.js")
 async def trial_script(): return FileResponse(ROOT / "trial.js")
+
