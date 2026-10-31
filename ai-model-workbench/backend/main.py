@@ -124,3 +124,4 @@ async def styles(): return FileResponse(ROOT / "styles.css")
 
 @app.get("/trial.js")
 async def trial_script(): return FileResponse(ROOT / "trial.js")
+
