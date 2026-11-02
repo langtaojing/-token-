@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew AI Team Hub IP TLS certificate
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/certbot-venv/bin/certbot renew --no-random-sleep-on-renew --quiet --deploy-hook "systemctl reload nginx"
