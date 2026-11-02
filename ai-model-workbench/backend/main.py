@@ -16,6 +16,8 @@ from .store import add_file, authenticate, connect, create_session, create_user,
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
+DATA_DIR = Path(os.getenv("AI_TEAM_HUB_DATA_DIR", str(ROOT / "data")))
+PRODUCTION = os.getenv("AI_TEAM_HUB_PRODUCTION") == "1"
 MINIMAX_URL = os.getenv("MINIMAX_API_URL", "https://api.minimax.cn/v1/text/chatcompletion_v2")
 MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M3")
 app = FastAPI(title="AI Team Hub", docs_url=None, redoc_url=None)
@@ -57,11 +59,12 @@ async def login(request: LoginRequest, response: Response):
     user = authenticate(request.username.strip(), request.password)
     if not user: raise HTTPException(401, "用户名或密码错误。")
     token = create_session(user["id"])
-    response.set_cookie("ai_team_session", token, httponly=True, samesite="lax", max_age=7*24*3600)
+    response.set_cookie("ai_team_session", token, httponly=True, secure=PRODUCTION, samesite="lax", max_age=7*24*3600)
     return {"username": user["username"], "role": user["role"]}
 
 @app.post("/api/register")
 async def register(request: RegisterRequest, response: Response):
+    if PRODUCTION: raise HTTPException(403, "公开注册已关闭，请联系管理员创建试用账号。")
     if os.getenv("AI_TEAM_HUB_ADMIN_ONLY") == "1": raise HTTPException(403, "管理员入口不开放注册。")
     username = request.username.strip()
     if request.password != request.repeat: raise HTTPException(400, "两次密码不一致。")
@@ -70,7 +73,7 @@ async def register(request: RegisterRequest, response: Response):
     try: user_id = create_user(username, request.password, "member", 20, 20000)
     except ValueError as exc: raise HTTPException(400, str(exc)) from None
     except sqlite3.IntegrityError: raise HTTPException(409, "用户名已经存在，请换一个。") from None
-    token = create_session(user_id); response.set_cookie("ai_team_session", token, httponly=True, samesite="lax", max_age=7*24*3600)
+    token = create_session(user_id); response.set_cookie("ai_team_session", token, httponly=True, secure=PRODUCTION, samesite="lax", max_age=7*24*3600)
     return {"username": username, "role": "member"}
 
 @app.post("/api/logout")
@@ -93,7 +96,7 @@ async def upload_file(file: UploadFile = File(...), ai_team_session: str | None 
     user = current_user(ai_team_session)
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_UPLOADS: raise HTTPException(400, "暂不支持这种文件类型。")
-    upload_dir = ROOT / "data" / "uploads" / str(user["id"]); upload_dir.mkdir(parents=True, exist_ok=True)
+    upload_dir = DATA_DIR / "uploads" / str(user["id"]); upload_dir.mkdir(parents=True, exist_ok=True)
     safe_name = f"{__import__('secrets').token_hex(12)}{suffix}"; destination = upload_dir / safe_name; total = 0
     with destination.open("wb") as output:
         while chunk := await file.read(1024 * 1024):
@@ -108,7 +111,7 @@ async def upload_file(file: UploadFile = File(...), ai_team_session: str | None 
 async def delete_uploaded_file(file_id: int, ai_team_session: str | None = Cookie(default=None)):
     user = current_user(ai_team_session); row = get_file(user["id"], file_id)
     if not row: raise HTTPException(404, "文件不存在。")
-    (ROOT / "data" / "uploads" / str(user["id"]) / row["stored_name"]).unlink(missing_ok=True); remove_file(user["id"], file_id)
+    (DATA_DIR / "uploads" / str(user["id"]) / row["stored_name"]).unlink(missing_ok=True); remove_file(user["id"], file_id)
     return {"ok": True}
 
 @app.get("/api/admin/users")

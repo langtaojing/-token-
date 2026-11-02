@@ -1,0 +1,21 @@
+[Unit]
+Description=AI Team Hub API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aiteamhub
+Group=aiteamhub
+WorkingDirectory=/opt/ai-team-hub
+EnvironmentFile=/etc/ai-team-hub.env
+ExecStart=/opt/ai-team-hub/.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/ai-team-hub
+
+[Install]
+WantedBy=multi-user.target

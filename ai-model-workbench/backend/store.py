@@ -2,8 +2,9 @@ from __future__ import annotations
 import hashlib, hmac, secrets, sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import os
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "trial.sqlite3"
+DB_PATH = Path(os.getenv("AI_TEAM_HUB_DB_PATH", str(Path(__file__).resolve().parent.parent / "data" / "trial.sqlite3")))
 
 def connect():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
