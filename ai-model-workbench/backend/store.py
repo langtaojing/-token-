@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 
 DB_PATH = Path(os.getenv("AI_TEAM_HUB_DB_PATH", str(Path(__file__).resolve().parent.parent / "data" / "trial.sqlite3")))
+CHINA_TIME = timezone(timedelta(hours=8))
 
 def connect():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -23,9 +24,13 @@ def initialize():
         CREATE INDEX IF NOT EXISTS idx_calls_user_day ON calls(user_id, day);
         CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, original_name TEXT NOT NULL, stored_name TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'uploaded', created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_files_user ON files(user_id, created_at);
+        CREATE TABLE IF NOT EXISTS plan_orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), plan_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_at TEXT);
+        CREATE INDEX IF NOT EXISTS idx_plan_orders_user ON plan_orders(user_id, created_at);
         """)
 
 def now(): return datetime.now(timezone.utc)
+
+def today(): return now().astimezone(CHINA_TIME).date().isoformat()
 
 def hash_password(password):
     if not password: raise ValueError("Password cannot be empty.")
@@ -98,7 +103,7 @@ def finish_call(call_id,status,prompt_tokens=0,completion_tokens=0,total_tokens=
         db.execute("UPDATE calls SET status=?,prompt_tokens=?,completion_tokens=?,total_tokens=?,latency_ms=? WHERE id=?",(status,prompt_tokens,completion_tokens,total_tokens,latency_ms,call_id))
 
 def record_call(db,user_id,model,status,prompt_tokens=0,completion_tokens=0,total_tokens=0,latency_ms=0):
-    n=now(); db.execute("INSERT INTO calls(user_id,created_at,day,model,prompt_tokens,completion_tokens,total_tokens,latency_ms,status) VALUES(?,?,?,?,?,?,?,?,?)",(user_id,n.isoformat(),n.date().isoformat(),model,prompt_tokens,completion_tokens,total_tokens,latency_ms,status))
+    n=now(); db.execute("INSERT INTO calls(user_id,created_at,day,model,prompt_tokens,completion_tokens,total_tokens,latency_ms,status) VALUES(?,?,?,?,?,?,?,?,?)",(user_id,n.isoformat(),today(),model,prompt_tokens,completion_tokens,total_tokens,latency_ms,status))
 
 def add_file(user_id, original_name, stored_name, content_type, size_bytes):
     with connect() as db:
@@ -113,3 +118,25 @@ def get_file(user_id, file_id):
 
 def remove_file(user_id, file_id):
     with connect() as db: db.execute("DELETE FROM files WHERE id=? AND user_id=?",(file_id,user_id))
+
+def create_plan_order(user_id, plan_id):
+    with connect() as db:
+        existing=db.execute("SELECT id FROM plan_orders WHERE user_id=? AND status='pending'",(user_id,)).fetchone()
+        if existing: raise ValueError("已有待处理的套餐申请。")
+        cur=db.execute("INSERT INTO plan_orders(user_id,plan_id,status,created_at) VALUES(?,?,'pending',?)",(user_id,plan_id,now().isoformat()))
+        return int(cur.lastrowid)
+
+def list_plan_orders(user_id=None):
+    with connect() as db:
+        query="SELECT o.id,o.user_id,u.username,o.plan_id,o.status,o.created_at,o.decided_at FROM plan_orders o JOIN users u ON u.id=o.user_id"
+        if user_id is None: return db.execute(query+" ORDER BY o.id DESC").fetchall()
+        return db.execute(query+" WHERE o.user_id=? ORDER BY o.id DESC",(user_id,)).fetchall()
+
+def decide_plan_order(order_id, approve, daily_requests=None, daily_tokens=None):
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row=db.execute("SELECT user_id,status FROM plan_orders WHERE id=?",(order_id,)).fetchone()
+        if not row or row["status"]!="pending": raise ValueError("申请不存在或已处理。")
+        if approve:
+            db.execute("UPDATE users SET daily_requests=?,daily_tokens=? WHERE id=?",(daily_requests,daily_tokens,row["user_id"]))
+        db.execute("UPDATE plan_orders SET status=?,decided_at=? WHERE id=?",("approved" if approve else "rejected",now().isoformat(),order_id))

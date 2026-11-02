@@ -3,3 +3,13 @@
 .trial-tabs{display:flex;gap:8px;margin:20px 0}.trial-tab{border:1px solid #405372;background:#182840;color:#aebed6;border-radius:8px;padding:9px 17px}.trial-tab.active{background:#7eafff;color:#071224}.trial-admin{border-top:1px solid #344763;margin-top:24px;padding-top:20px}.trial-admin h2{font-size:18px}.admin-user{display:flex;gap:12px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #30415f;padding:10px 0}.admin-user b{min-width:100px}.admin-user span{color:#98a9c3;font-size:12px}.admin-user label{margin:0}.admin-user input{width:90px;padding:7px;margin:0}
 
 .client-tools{display:grid;grid-template-columns:1fr 1.4fr;gap:16px;margin:18px 0;padding:16px;border:1px solid #30415f;border-radius:12px;background:#13223a}.client-tools h2{font-size:14px;margin:0 0 9px}.client-tools select,.client-tools input{width:100%;margin-bottom:8px}.file-list{display:grid;gap:6px}.file-row{display:flex;justify-content:space-between;align-items:center;gap:8px;color:#b6c6df;font-size:12px;padding:6px 0;border-bottom:1px solid #2b3b57}.file-row .trial-btn{padding:4px 8px;font-size:11px}@media(max-width:700px){.client-tools{grid-template-columns:1fr}}
+.trial-wrap{width:min(100%,1080px);margin:24px auto;padding:clamp(12px,3vw,28px)}
+.trial-card{padding:clamp(16px,3vw,28px)}
+.trial-head{flex-wrap:wrap}
+.plans-panel{margin:20px 0;padding:18px;border:1px solid #365781;border-radius:12px;background:#12233b}
+.plans-panel h2,.trial-admin h2{font-size:17px;margin:8px 0 12px}
+.plans-grid,.metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.plan-card,.metric-card{background:#0d172a;border:1px solid #344763;border-radius:10px;padding:14px}
+.plan-card h3{margin:0 0 9px}.plan-card strong,.metric-card strong{display:block;font-size:19px}.plan-card p{color:#aebed6;font-size:12px}
+.metric-card small{color:#8fa3c1}.usage-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid #30415f;font-size:12px}
+@media(max-width:600px){.trial-wrap{margin:0 auto;padding:10px}.trial-head .trial-btn{margin-top:10px}.trial-card input,.trial-card textarea,.client-tools select{font-size:16px}.trial-btn{min-height:42px}}

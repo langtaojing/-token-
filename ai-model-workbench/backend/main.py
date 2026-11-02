@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import sqlite3
 from pathlib import Path
 from time import perf_counter
@@ -13,7 +14,9 @@ from pydantic import BaseModel, Field
 
 from .orchestrator import ProviderError, run_orchestration
 from .rate_limit import check_and_record, initialize as initialize_rate_limit
-from .store import add_file, authenticate, connect, create_session, create_user, delete_session, finish_call, get_file, initialize, list_files, list_users, remove_file, reserve_call, update_user, usage, user_for_session, username_exists
+from .metrics import tcp_probe, usage_snapshot
+from .plans import PLANS
+from .store import add_file, authenticate, connect, create_plan_order, create_session, create_user, decide_plan_order, delete_session, finish_call, get_file, initialize, list_files, list_plan_orders, list_users, remove_file, reserve_call, today, update_user, usage, user_for_session, username_exists
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -41,6 +44,12 @@ class UserAdminRequest(BaseModel):
     daily_requests: int = Field(ge=1, le=1000)
     daily_tokens: int = Field(ge=1, le=1_000_000)
     active: bool | None = None
+
+class PlanRequest(BaseModel):
+    plan_id: str
+
+class PlanDecision(BaseModel):
+    approve: bool
 
 ALLOWED_UPLOADS = {".pdf", ".docx", ".txt", ".md", ".mp4", ".mov", ".mp3", ".wav"}
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
@@ -88,7 +97,7 @@ async def logout(response: Response, ai_team_session: str | None = Cookie(defaul
 @app.get("/api/me")
 async def me(ai_team_session: str | None = Cookie(default=None)):
     user = current_user(ai_team_session)
-    with connect() as db: requests_used, tokens_used = usage(db, user["id"], __import__("datetime").datetime.now(__import__("datetime").timezone.utc).date().isoformat())
+    with connect() as db: requests_used, tokens_used = usage(db, user["id"], today())
     return {"username": user["username"], "role": user["role"], "daily_requests": user["daily_requests"], "daily_tokens": user["daily_tokens"], "requests_used": requests_used, "tokens_used": tokens_used}
 
 @app.get("/api/files")
@@ -125,6 +134,49 @@ async def admin_users(ai_team_session: str | None = Cookie(default=None)):
     if user["role"] != "admin": raise HTTPException(403, "只有管理员可以管理账号。")
     return {"users": [dict(row) for row in list_users()]}
 
+@app.get("/api/admin/metrics")
+async def admin_metrics(ai_team_session: str | None = Cookie(default=None)):
+    user = current_user(ai_team_session)
+    if user["role"] != "admin": raise HTTPException(403, "只有管理员可以查看监测数据。")
+    snapshot = usage_snapshot()
+    snapshot["provider_network"] = await asyncio.to_thread(tcp_probe, MINIMAX_URL)
+    return snapshot
+
+@app.get("/api/plans")
+async def plans():
+    return {"plans": [{"id": key, **value} for key, value in PLANS.items()], "payment_mode": "manual_review", "notice": "仅提交申请，尚未接入在线支付。"}
+
+@app.get("/api/plan-orders")
+async def my_plan_orders(ai_team_session: str | None = Cookie(default=None)):
+    user = current_user(ai_team_session)
+    return {"orders": [dict(row) for row in list_plan_orders(user["id"])]}
+
+@app.post("/api/plan-orders")
+async def request_plan(request: PlanRequest, ai_team_session: str | None = Cookie(default=None)):
+    user = current_user(ai_team_session)
+    if request.plan_id not in PLANS: raise HTTPException(400, "套餐不存在。")
+    try: order_id = create_plan_order(user["id"], request.plan_id)
+    except ValueError as exc: raise HTTPException(409, str(exc)) from None
+    return {"id": order_id, "status": "pending", "notice": "申请已提交，等待管理员处理；尚未产生付款。"}
+
+@app.get("/api/admin/plan-orders")
+async def admin_plan_orders(ai_team_session: str | None = Cookie(default=None)):
+    user = current_user(ai_team_session)
+    if user["role"] != "admin": raise HTTPException(403, "只有管理员可以查看套餐申请。")
+    return {"orders": [dict(row) for row in list_plan_orders()]}
+
+@app.post("/api/admin/plan-orders/{order_id}/decision")
+async def admin_plan_decision(order_id: int, decision: PlanDecision, ai_team_session: str | None = Cookie(default=None)):
+    user = current_user(ai_team_session)
+    if user["role"] != "admin": raise HTTPException(403, "只有管理员可以处理套餐申请。")
+    orders = [row for row in list_plan_orders() if row["id"] == order_id]
+    if not orders: raise HTTPException(404, "申请不存在。")
+    plan = PLANS.get(orders[0]["plan_id"])
+    if not plan: raise HTTPException(400, "套餐配置不存在。")
+    try: decide_plan_order(order_id, decision.approve, plan["daily_requests"], plan["daily_tokens"])
+    except ValueError as exc: raise HTTPException(409, str(exc)) from None
+    return {"ok": True, "status": "approved" if decision.approve else "rejected"}
+
 @app.patch("/api/admin/users/{user_id}")
 async def admin_update_user(user_id: int, request: UserAdminRequest, ai_team_session: str | None = Cookie(default=None)):
     user = current_user(ai_team_session)
@@ -139,7 +191,7 @@ async def admin_update_user(user_id: int, request: UserAdminRequest, ai_team_ses
 async def chat(request: ChatRequest, ai_team_session: str | None = Cookie(default=None)):
     user = current_user(ai_team_session); prompt = request.prompt.strip(); api_key = os.getenv("MINIMAX_API_KEY", "").strip()
     if not api_key: raise HTTPException(503, "服务尚未配置 MiniMax API Key。")
-    day = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).date().isoformat()
+    day = today()
     try: call_id = reserve_call(user, MINIMAX_MODEL, day)
     except ValueError as exc: raise HTTPException(429, str(exc)) from None
     try:
@@ -147,6 +199,9 @@ async def chat(request: ChatRequest, ai_team_session: str | None = Cookie(defaul
     except ProviderError as exc:
         finish_call(call_id, "failed")
         raise HTTPException(exc.status, str(exc)) from None
+    except Exception:
+        finish_call(call_id, "failed")
+        raise HTTPException(502, "模型请求未完成，请稍后重试。") from None
     finish_call(call_id, "success", result.prompt_tokens, result.completion_tokens, result.total_tokens, result.latency_ms)
     return {"answer": result.answer, "model": result.model, "plan": result.plan, "stages": result.stages, "usage": {"total_tokens": result.total_tokens}, "latency_ms": result.latency_ms}
 
@@ -158,4 +213,10 @@ async def styles(): return FileResponse(ROOT / "styles.css")
 
 @app.get("/trial.js")
 async def trial_script(): return FileResponse(ROOT / "trial.js")
+
+@app.get("/manifest.webmanifest")
+async def manifest(): return FileResponse(ROOT / "manifest.webmanifest", media_type="application/manifest+json")
+
+@app.get("/ai-team-hub-icon.png")
+async def app_icon(): return FileResponse(ROOT / "ai-team-hub-icon.png", media_type="image/png")
 
