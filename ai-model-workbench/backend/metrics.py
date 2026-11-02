@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import socket
 import statistics
 from datetime import timedelta
@@ -29,7 +30,7 @@ def usage_snapshot() -> dict:
             (today(),),
         ).fetchall()
     values = sorted(row["latency_ms"] for row in rows if row["status"] == "success" and row["latency_ms"] > 0)
-    p95 = values[min(len(values) - 1, int((len(values) - 1) * 0.95))] if values else None
+    p95 = values[math.ceil(len(values) * 0.95) - 1] if values else None
     return {
         "active_users": users,
         "last_24h": {
@@ -40,6 +41,7 @@ def usage_snapshot() -> dict:
             "tokens": sum(row["total_tokens"] for row in rows if row["status"] == "success"),
             "avg_latency_ms": round(statistics.mean(values)) if values else None,
             "p95_latency_ms": p95,
+            "latency_samples": len(values),
         },
         "per_user_today": [dict(row) for row in per_user],
         "recent_calls": [dict(row) for row in rows[:20]],
