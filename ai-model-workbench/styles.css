@@ -21,3 +21,4 @@
 .network-chart{display:flex;align-items:end;gap:4px;min-height:190px;overflow-x:auto;padding:10px;background:#0d172a;border:1px solid #30415f;border-radius:10px}
 .network-col{min-width:16px;display:flex;align-items:end;height:170px}
 .network-bar{width:14px;background:#7eafff;border-radius:4px 4px 0 0}
+@media(min-width:900px){.trial-admin:not(.trial-hidden){display:grid;grid-template-columns:170px minmax(0,1fr);align-items:start}.trial-admin #admin-nav{grid-column:1;grid-row:1 / span 4;position:sticky;top:16px;display:flex;flex-direction:column}.trial-admin [data-admin-section]{grid-column:2}}
