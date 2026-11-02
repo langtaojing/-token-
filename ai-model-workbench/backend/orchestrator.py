@@ -5,7 +5,11 @@ from time import perf_counter
 import httpx
 
 class ProviderError(Exception):
-    def __init__(self, message, status=502): self.status=status; super().__init__(message)
+    def __init__(self, message, status=502, kind="provider", usage=None):
+        self.status=status
+        self.kind=kind
+        self.usage=usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        super().__init__(message)
 
 @dataclass
 class Completion:
@@ -22,6 +26,25 @@ class MiniMaxProvider:
         self.url=os.getenv('MINIMAX_API_URL','https://api.minimax.cn/v1/text/chatcompletion_v2')
         self.model=os.getenv('MINIMAX_MODEL','MiniMax-M3')
     async def complete(self,messages,max_tokens=3000):
+        try:
+            return await self._complete_once(messages,max_tokens)
+        except ProviderError as exc:
+            if exc.kind != "empty_content":
+                raise
+            try:
+                result = await self._complete_once(messages,min(max_tokens*2,12000))
+            except ProviderError as retry_error:
+                retry_error.usage = {
+                    key: retry_error.usage[key]+exc.usage[key]
+                    for key in ("prompt_tokens","completion_tokens","total_tokens")
+                }
+                raise
+            result.prompt_tokens += exc.usage["prompt_tokens"]
+            result.completion_tokens += exc.usage["completion_tokens"]
+            result.total_tokens += exc.usage["total_tokens"]
+            return result
+
+    async def _complete_once(self,messages,max_tokens):
         if not self.api_key: raise ProviderError('服务尚未配置 MiniMax API Key。',503)
         started=perf_counter()
         try:
@@ -33,9 +56,11 @@ class MiniMaxProvider:
         except (httpx.RequestError,ValueError) as exc: raise ProviderError('无法连接 MiniMax 或返回格式无效。') from exc
         base=data.get('base_resp') or {}
         if base.get('status_code',0)!=0: raise ProviderError('MiniMax 拒绝了本次请求。')
-        choices=data.get('choices') or []; text=((choices[0].get('message') or {}).get('content') if choices else None)
-        if not isinstance(text,str) or not text.strip(): raise ProviderError('模型没有返回文本回答。')
         u=data.get('usage') or {}
+        counts={key:int(u.get(key) or 0) for key in ('prompt_tokens','completion_tokens','total_tokens')}
+        choices=data.get('choices') or []; text=((choices[0].get('message') or {}).get('content') if choices else None)
+        if not isinstance(text,str) or not text.strip():
+            raise ProviderError('模型没有返回文本回答。',kind='empty_content',usage=counts)
         return Completion(text.strip(),data.get('model') or self.model,int(u.get('prompt_tokens') or 0),int(u.get('completion_tokens') or 0),int(u.get('total_tokens') or 0),round((perf_counter()-started)*1000))
 
 @dataclass
@@ -50,11 +75,36 @@ class OrchestrationResult:
     latency_ms: int
 
 async def run_orchestration(prompt):
-    provider=MiniMaxProvider(); stages=[]; p=c=t=l=0; nl=chr(10)
+    provider=MiniMaxProvider(); stages=[]; p=c=t=0; nl=chr(10); started=perf_counter()
+    def total_latency(): return round((perf_counter()-started)*1000)
     def add(x):
-        nonlocal p,c,t,l
-        p+=x.prompt_tokens; c+=x.completion_tokens; t+=x.total_tokens; l+=x.latency_ms
-    plan=await provider.complete([{'role':'system','content':'你是任务规划器。只输出简洁执行计划，不要回答原问题。'},{'role':'user','content':'用户问题：'+nl+prompt+nl+nl+'请给出最多 5 步的执行计划。'}],800); add(plan); stages.append('规划')
-    draft=await provider.complete([{'role':'system','content':'你是执行器。根据用户问题和计划完成任务。'},{'role':'user','content':'用户问题：'+nl+prompt+nl+nl+'执行计划：'+nl+plan.text+nl+nl+'请输出结构化草稿。'}],5000); add(draft); stages.append('执行')
-    review=await provider.complete([{'role':'system','content':'你是结果复查器。直接输出修订后的最终答案。'},{'role':'user','content':'用户问题：'+nl+prompt+nl+nl+'草稿：'+nl+draft.text+nl+nl+'请检查遗漏和编造后输出最终答案。'}],5000); add(review); stages.append('复查')
-    return OrchestrationResult(review.text,review.model,plan.text,stages,p,c,t,l)
+        nonlocal p,c,t
+        p+=x.prompt_tokens; c+=x.completion_tokens; t+=x.total_tokens
+    try:
+        plan=await provider.complete([{'role':'system','content':'你是任务规划器。只输出简洁执行计划，不要回答原问题。'},{'role':'user','content':'用户问题：'+nl+prompt+nl+nl+'请给出最多 5 步的执行计划。'}],1500)
+        add(plan)
+        plan_text=plan.text
+        stages.append('规划')
+    except ProviderError as exc:
+        if exc.kind != 'empty_content': raise
+        p+=exc.usage['prompt_tokens']; c+=exc.usage['completion_tokens']; t+=exc.usage['total_tokens']
+        plan_text='1. 理解需求和约束；2. 给出具体方案；3. 检查遗漏并明确不确定处。'
+        stages.append('规划（兜底）')
+    try:
+        draft=await provider.complete([{'role':'system','content':'你是执行器。根据用户问题和计划完成任务。'},{'role':'user','content':'用户问题：'+nl+prompt+nl+nl+'执行计划：'+nl+plan_text+nl+nl+'请输出结构化草稿。'}],8000)
+    except ProviderError as exc:
+        if exc.kind != 'empty_content': raise
+        p+=exc.usage['prompt_tokens']; c+=exc.usage['completion_tokens']; t+=exc.usage['total_tokens']
+        stages.append('执行（备用请求）')
+        draft=await provider.complete([{'role':'user','content':'请直接回答下面的问题，给出具体可执行的内容：'+nl+prompt}],12000)
+    add(draft); stages.append('执行')
+    try:
+        review=await provider.complete([{'role':'system','content':'你是结果复查器。直接输出修订后的最终答案。'},{'role':'user','content':'用户问题：'+nl+prompt+nl+nl+'草稿：'+nl+draft.text+nl+nl+'请检查遗漏和编造后输出最终答案。'}],8000)
+        add(review)
+        stages.append('复查')
+        return OrchestrationResult(review.text,review.model,plan_text,stages,p,c,t,total_latency())
+    except ProviderError as exc:
+        if exc.kind != 'empty_content': raise
+        p+=exc.usage['prompt_tokens']; c+=exc.usage['completion_tokens']; t+=exc.usage['total_tokens']
+        stages.append('复查（返回草稿）')
+        return OrchestrationResult(draft.text,draft.model,plan_text,stages,p,c,t,total_latency())
