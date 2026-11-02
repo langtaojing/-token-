@@ -25,14 +25,14 @@ class MiniMaxProvider:
         self.api_key=os.getenv('MINIMAX_API_KEY','').strip()
         self.url=os.getenv('MINIMAX_API_URL','https://api.minimax.cn/v1/text/chatcompletion_v2')
         self.model=os.getenv('MINIMAX_MODEL','MiniMax-M3')
-    async def complete(self,messages,max_tokens=3000):
+    async def complete(self,messages,max_tokens=3000,model=None,effort=None):
         try:
-            return await self._complete_once(messages,max_tokens)
+            return await self._complete_once(messages,max_tokens,model,effort)
         except ProviderError as exc:
             if exc.kind != "empty_content":
                 raise
             try:
-                result = await self._complete_once(messages,min(max_tokens*2,12000))
+                result = await self._complete_once(messages,min(max_tokens*2,12000),model,effort)
             except ProviderError as retry_error:
                 retry_error.usage = {
                     key: retry_error.usage[key]+exc.usage[key]
@@ -44,12 +44,14 @@ class MiniMaxProvider:
             result.total_tokens += exc.usage["total_tokens"]
             return result
 
-    async def _complete_once(self,messages,max_tokens):
+    async def _complete_once(self,messages,max_tokens,model=None,effort=None):
         if not self.api_key: raise ProviderError('服务尚未配置 MiniMax API Key。',503)
         started=perf_counter()
         try:
             async with httpx.AsyncClient(timeout=90) as client:
-                response=await client.post(self.url,json={'model':self.model,'messages':messages,'stream':False,'max_completion_tokens':max_tokens},headers={'Authorization':f'Bearer {self.api_key}','Content-Type':'application/json'})
+                payload={'model':model or self.model,'messages':messages,'stream':False,'max_completion_tokens':max_tokens}
+                if effort: payload['reasoning_effort']=effort
+                response=await client.post(self.url,json=payload,headers={'Authorization':f'Bearer {self.api_key}','Content-Type':'application/json'})
                 response.raise_for_status(); data=response.json()
         except httpx.TimeoutException as exc: raise ProviderError('模型请求超时。',504) from exc
         except httpx.HTTPStatusError as exc: raise ProviderError('模型服务返回错误，请稍后重试。',502) from exc
@@ -84,7 +86,7 @@ async def run_orchestration(prompt, mode="fast"):
         answer = await provider.complete([
             {'role':'system','content':'请直接回答用户问题，给出具体、有用的内容。信息不足时说明假设，不要只给简短一句话。'},
             {'role':'user','content':prompt},
-        ], 12000)
+        ], 4000, model='MiniMax-M3.1-Flash', effort='low')
         add(answer)
         return OrchestrationResult(answer.text,answer.model,'', ['快速回答'],p,c,t,total_latency())
     try:
