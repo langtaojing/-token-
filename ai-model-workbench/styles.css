@@ -22,3 +22,5 @@
 .network-col{min-width:16px;display:flex;align-items:end;height:170px}
 .network-bar{width:14px;background:#7eafff;border-radius:4px 4px 0 0}
 @media(min-width:900px){.trial-admin:not(.trial-hidden){display:grid;grid-template-columns:170px minmax(0,1fr);align-items:start}.trial-admin #admin-nav{grid-column:1;grid-row:1 / span 4;position:sticky;top:16px;display:flex;flex-direction:column}.trial-admin [data-admin-section]{grid-column:2}}
+
+.image-analyzer{padding:16px;border:1px solid #365781;border-radius:12px;background:#12233b;margin-bottom:18px}.image-analyzer h3{margin-top:0}.image-analyzer input{display:block;width:100%;margin-bottom:10px}.image-analyzer button{margin-bottom:4px}

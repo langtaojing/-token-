@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import base64
 from dataclasses import dataclass
 from time import perf_counter
 import httpx
@@ -64,6 +65,11 @@ class MiniMaxProvider:
         if not isinstance(text,str) or not text.strip():
             raise ProviderError('模型没有返回文本回答。',kind='empty_content',usage=counts)
         return Completion(text.strip(),data.get('model') or self.model,int(u.get('prompt_tokens') or 0),int(u.get('completion_tokens') or 0),int(u.get('total_tokens') or 0),round((perf_counter()-started)*1000))
+
+    async def analyze_image(self, image_bytes, mime_type, prompt, max_tokens=4000):
+        encoded=base64.b64encode(image_bytes).decode('ascii')
+        messages=[{'role':'user','content':[{'type':'text','text':prompt},{'type':'image_url','image_url':{'url':f'data:{mime_type};base64,{encoded}'}}]}]
+        return await self.complete(messages,max_tokens,model='MiniMax-M3.1-Flash',effort='low')
 
 @dataclass
 class OrchestrationResult:

@@ -8,7 +8,7 @@ from time import perf_counter
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Cookie, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Cookie, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -52,7 +52,8 @@ class PlanRequest(BaseModel):
 class PlanDecision(BaseModel):
     approve: bool
 
-ALLOWED_UPLOADS = {".pdf", ".docx", ".txt", ".md", ".mp4", ".mov", ".mp3", ".wav"}
+ALLOWED_UPLOADS = {".pdf", ".docx", ".txt", ".md", ".mp4", ".mov", ".mp3", ".wav", ".png", ".jpg", ".jpeg", ".webp"}
+IMAGE_UPLOADS = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
 def current_user(session: str | None):
@@ -128,6 +129,28 @@ async def delete_uploaded_file(file_id: int, ai_team_session: str | None = Cooki
     if not row: raise HTTPException(404, "文件不存在。")
     (DATA_DIR / "uploads" / str(user["id"]) / row["stored_name"]).unlink(missing_ok=True); remove_file(user["id"], file_id)
     return {"ok": True}
+
+@app.post("/api/analyze-image")
+async def analyze_image(prompt: str = Form(default="请分析这张图片，描述其中的重要内容、文字和可能的上下文。", max_length=4000), file: UploadFile = File(...), ai_team_session: str | None = Cookie(default=None)):
+    user=current_user(ai_team_session); suffix=Path(file.filename or "").suffix.lower()
+    if suffix not in IMAGE_UPLOADS: raise HTTPException(400, "请选择 PNG、JPG 或 WEBP 图片。")
+    image_bytes=await file.read()
+    if len(image_bytes)>10*1024*1024: raise HTTPException(413, "图片不能超过 10 MB。")
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"): mime="image/png"
+    elif image_bytes.startswith(b"\xff\xd8\xff"): mime="image/jpeg"
+    elif image_bytes.startswith(b"RIFF") and image_bytes[8:12]==b"WEBP": mime="image/webp"
+    else: raise HTTPException(400, "文件内容不是有效的 PNG、JPG 或 WEBP 图片。")
+    try: call_id=reserve_call(user, "MiniMax-M3.1-Flash-vision", today())
+    except ValueError as exc: raise HTTPException(429, str(exc)) from None
+    try:
+        from .orchestrator import MiniMaxProvider
+        result=await MiniMaxProvider().analyze_image(image_bytes,mime,prompt)
+    except ProviderError as exc:
+        finish_call(call_id,"failed"); raise HTTPException(exc.status,str(exc)) from None
+    except Exception:
+        finish_call(call_id,"failed"); raise HTTPException(502,"图片分析失败，请稍后重试。") from None
+    finish_call(call_id,"success",result.prompt_tokens,result.completion_tokens,result.total_tokens,result.latency_ms)
+    return {"answer":result.text,"model":result.model,"usage":{"total_tokens":result.total_tokens},"latency_ms":result.latency_ms}
 
 @app.get("/api/admin/users")
 async def admin_users(ai_team_session: str | None = Cookie(default=None)):
