@@ -72,3 +72,38 @@ def tcp_probe(target_url: str, attempts: int = 5) -> dict:
         "avg_connect_ms": round(statistics.mean(samples)) if samples else None,
         "note": "TCP 连通探测失败率，不是网络层丢包率",
     }
+
+
+def initialize_samples() -> None:
+    with connect() as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS network_samples (
+            id INTEGER PRIMARY KEY, sampled_at TEXT NOT NULL,
+            target TEXT NOT NULL, attempts INTEGER NOT NULL,
+            failed INTEGER NOT NULL, avg_connect_ms INTEGER,
+            status TEXT NOT NULL
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_network_samples_time ON network_samples(sampled_at)")
+
+
+def save_network_sample(target_url: str) -> dict:
+    initialize_samples()
+    result = tcp_probe(target_url)
+    with connect() as db:
+        db.execute(
+            """INSERT INTO network_samples(sampled_at,target,attempts,failed,avg_connect_ms,status)
+               VALUES(?,?,?,?,?,?)""",
+            (now().isoformat(), result.get("target", ""), result["attempts"], result["failed"], result["avg_connect_ms"], result["status"]),
+        )
+        db.execute("DELETE FROM network_samples WHERE sampled_at < ?", ((now() - timedelta(days=30)).isoformat(),))
+    return result
+
+
+def network_history(limit: int = 48) -> list[dict]:
+    initialize_samples()
+    with connect() as db:
+        rows = db.execute(
+            """SELECT sampled_at,target,attempts,failed,avg_connect_ms,status
+               FROM network_samples ORDER BY id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in reversed(rows)]

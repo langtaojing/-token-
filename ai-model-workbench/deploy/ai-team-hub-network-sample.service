@@ -1,0 +1,16 @@
+[Unit]
+Description=Sample AI Team Hub provider TCP connectivity
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aiteamhub
+Group=aiteamhub
+WorkingDirectory=/opt/ai-team-hub
+EnvironmentFile=/etc/ai-team-hub.env
+ExecStart=/opt/ai-team-hub/.venv/bin/python -m backend.network_sampler
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/ai-team-hub

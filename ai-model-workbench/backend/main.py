@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from .orchestrator import ProviderError, run_orchestration
 from .rate_limit import check_and_record, initialize as initialize_rate_limit
-from .metrics import tcp_probe, usage_snapshot
+from .metrics import network_history, usage_snapshot
 from .plans import PLANS
 from .store import add_file, authenticate, connect, create_plan_order, create_session, create_user, decide_plan_order, delete_session, finish_call, get_file, initialize, list_files, list_plan_orders, list_users, remove_file, reserve_call, today, update_user, usage, user_for_session, username_exists
 
@@ -139,8 +139,25 @@ async def admin_metrics(ai_team_session: str | None = Cookie(default=None)):
     user = current_user(ai_team_session)
     if user["role"] != "admin": raise HTTPException(403, "只有管理员可以查看监测数据。")
     snapshot = usage_snapshot()
-    snapshot["provider_network"] = await asyncio.to_thread(tcp_probe, MINIMAX_URL)
+    history = network_history()
+    latest = history[-1] if history else None
+    snapshot["provider_network"] = {
+        "status": latest["status"] if latest else "no_samples",
+        "target": latest["target"] if latest else None,
+        "attempts": latest["attempts"] if latest else 0,
+        "failed": latest["failed"] if latest else 0,
+        "probe_failure_rate_pct": round(latest["failed"] * 100 / latest["attempts"], 1) if latest and latest["attempts"] else None,
+        "avg_connect_ms": latest["avg_connect_ms"] if latest else None,
+        "sampled_at": latest["sampled_at"] if latest else None,
+        "note": "TCP 连通探测失败率，不是网络层丢包率",
+    }
     return snapshot
+
+@app.get("/api/admin/network-history")
+async def admin_network_history(ai_team_session: str | None = Cookie(default=None)):
+    user = current_user(ai_team_session)
+    if user["role"] != "admin": raise HTTPException(403, "只有管理员可以查看监测数据。")
+    return {"interval_minutes": 30, "samples": network_history()}
 
 @app.get("/api/plans")
 async def plans():

@@ -13,3 +13,10 @@
 .plan-card h3{margin:0 0 9px}.plan-card strong,.metric-card strong{display:block;font-size:19px}.plan-card p{color:#aebed6;font-size:12px}
 .metric-card small{color:#8fa3c1}.usage-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid #30415f;font-size:12px}
 @media(max-width:600px){.trial-wrap{margin:0 auto;padding:10px}.trial-head .trial-btn{margin-top:10px}.trial-card input,.trial-card textarea,.client-tools select{font-size:16px}.trial-btn{min-height:42px}}
+.section-nav{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0;padding:10px;background:#0d172a;border:1px solid #30415f;border-radius:12px}
+.section-nav button{border:0;background:#203452;color:#b6c6df;border-radius:8px;padding:10px 14px;cursor:pointer}
+.section-nav button.active{background:#7eafff;color:#071224;font-weight:700}
+.trial-admin:not(.trial-hidden){display:grid;grid-template-columns:1fr;gap:12px}
+.network-chart{display:flex;align-items:end;gap:4px;min-height:190px;overflow-x:auto;padding:10px;background:#0d172a;border:1px solid #30415f;border-radius:10px}
+.network-col{min-width:16px;display:flex;align-items:end;height:170px}
+.network-bar{width:14px;background:#7eafff;border-radius:4px 4px 0 0}
