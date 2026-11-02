@@ -74,12 +74,19 @@ class OrchestrationResult:
     total_tokens: int
     latency_ms: int
 
-async def run_orchestration(prompt):
+async def run_orchestration(prompt, mode="fast"):
     provider=MiniMaxProvider(); stages=[]; p=c=t=0; nl=chr(10); started=perf_counter()
     def total_latency(): return round((perf_counter()-started)*1000)
     def add(x):
         nonlocal p,c,t
         p+=x.prompt_tokens; c+=x.completion_tokens; t+=x.total_tokens
+    if mode == "fast":
+        answer = await provider.complete([
+            {'role':'system','content':'请直接回答用户问题，给出具体、有用的内容。信息不足时说明假设，不要只给简短一句话。'},
+            {'role':'user','content':prompt},
+        ], 12000)
+        add(answer)
+        return OrchestrationResult(answer.text,answer.model,'', ['快速回答'],p,c,t,total_latency())
     try:
         plan=await provider.complete([{'role':'system','content':'你是任务规划器。只输出简洁执行计划，不要回答原问题。'},{'role':'user','content':'用户问题：'+nl+prompt+nl+nl+'请给出最多 5 步的执行计划。'}],1500)
         add(plan)

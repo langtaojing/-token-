@@ -34,6 +34,7 @@ class LoginRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=12000)
+    mode: str = "fast"
 
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=1, max_length=40)
@@ -208,11 +209,12 @@ async def admin_update_user(user_id: int, request: UserAdminRequest, ai_team_ses
 async def chat(request: ChatRequest, ai_team_session: str | None = Cookie(default=None)):
     user = current_user(ai_team_session); prompt = request.prompt.strip(); api_key = os.getenv("MINIMAX_API_KEY", "").strip()
     if not api_key: raise HTTPException(503, "服务尚未配置 MiniMax API Key。")
+    if request.mode not in ("fast", "deep"): raise HTTPException(400, "不支持的处理模式。")
     day = today()
     try: call_id = reserve_call(user, MINIMAX_MODEL, day)
     except ValueError as exc: raise HTTPException(429, str(exc)) from None
     try:
-        result = await run_orchestration(prompt)
+        result = await run_orchestration(prompt, mode=request.mode)
     except ProviderError as exc:
         finish_call(call_id, "failed")
         raise HTTPException(exc.status, str(exc)) from None
