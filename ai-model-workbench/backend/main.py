@@ -7,11 +7,12 @@ from time import perf_counter
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Cookie, FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import Cookie, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .orchestrator import ProviderError, run_orchestration
+from .rate_limit import check_and_record, initialize as initialize_rate_limit
 from .store import add_file, authenticate, connect, create_session, create_user, delete_session, finish_call, get_file, initialize, list_files, list_users, remove_file, reserve_call, update_user, usage, user_for_session, username_exists
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,6 +23,7 @@ MINIMAX_URL = os.getenv("MINIMAX_API_URL", "https://api.minimax.cn/v1/text/chatc
 MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M3")
 app = FastAPI(title="AI Team Hub", docs_url=None, redoc_url=None)
 initialize()
+initialize_rate_limit()
 
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=40)
@@ -55,7 +57,9 @@ async def health():
     return {"mode": "live" if os.getenv("MINIMAX_API_KEY", "").strip() else "unconfigured", "model": MINIMAX_MODEL}
 
 @app.post("/api/login")
-async def login(request: LoginRequest, response: Response):
+async def login(request: LoginRequest, response: Response, http_request: Request):
+    if PRODUCTION and not check_and_record(http_request.client.host if http_request.client else "unknown", "login", 30):
+        raise HTTPException(429, "登录尝试过多，请稍后再试。")
     user = authenticate(request.username.strip(), request.password)
     if not user: raise HTTPException(401, "用户名或密码错误。")
     token = create_session(user["id"])
@@ -63,8 +67,9 @@ async def login(request: LoginRequest, response: Response):
     return {"username": user["username"], "role": user["role"]}
 
 @app.post("/api/register")
-async def register(request: RegisterRequest, response: Response):
-    if PRODUCTION: raise HTTPException(403, "公开注册已关闭，请联系管理员创建试用账号。")
+async def register(request: RegisterRequest, response: Response, http_request: Request):
+    if PRODUCTION and not check_and_record(http_request.client.host if http_request.client else "unknown", "register", 5):
+        raise HTTPException(429, "注册过于频繁，请稍后再试。")
     if os.getenv("AI_TEAM_HUB_ADMIN_ONLY") == "1": raise HTTPException(403, "管理员入口不开放注册。")
     username = request.username.strip()
     if request.password != request.repeat: raise HTTPException(400, "两次密码不一致。")
