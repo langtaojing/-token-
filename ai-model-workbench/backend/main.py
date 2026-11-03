@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import asyncio
 import sqlite3
+import subprocess
 from pathlib import Path
 from time import perf_counter
 
@@ -16,7 +17,7 @@ from .orchestrator import ProviderError, run_orchestration
 from .rate_limit import check_and_record, initialize as initialize_rate_limit
 from .metrics import network_history, usage_snapshot
 from .plans import PLANS
-from .store import add_file, authenticate, connect, create_plan_order, create_session, create_user, decide_plan_order, delete_session, finish_call, get_file, initialize, list_files, list_plan_orders, list_users, remove_file, reserve_call, today, update_user, usage, user_for_session, username_exists
+from .store import add_file, add_message, authenticate, connect, create_plan_order, create_session, create_user, decide_plan_order, delete_session, finish_call, get_file, get_or_create_conversation, initialize, list_files, list_plan_orders, list_users, recent_messages, remove_file, reserve_call, today, update_user, usage, user_for_session, username_exists
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -55,6 +56,16 @@ class PlanDecision(BaseModel):
 ALLOWED_UPLOADS = {".pdf", ".docx", ".txt", ".md", ".mp4", ".mov", ".mp3", ".wav", ".png", ".jpg", ".jpeg", ".webp"}
 IMAGE_UPLOADS = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+
+def extract_document_text(path: Path, suffix: str) -> str:
+    if suffix in {'.txt','.md'}: return path.read_text(encoding='utf-8', errors='replace')[:200000]
+    if suffix == '.pdf':
+        from pypdf import PdfReader
+        return '\\n'.join((page.extract_text() or '') for page in PdfReader(str(path)).pages)[:200000]
+    if suffix == '.docx':
+        from docx import Document
+        return '\\n'.join(p.text for p in Document(str(path)).paragraphs)[:200000]
+    return ''
 
 def current_user(session: str | None):
     user = user_for_session(session)
@@ -120,8 +131,25 @@ async def upload_file(file: UploadFile = File(...), ai_team_session: str | None 
             if total > MAX_UPLOAD_BYTES:
                 destination.unlink(missing_ok=True); raise HTTPException(413, "文件不能超过 500 MB。")
             output.write(chunk)
+    status='uploaded'; text=''
+    try:
+        text=extract_document_text(destination, suffix)
+        if text: status='parsed'
+        elif suffix in {'.mp4','.mov','.mp3','.wav'} and subprocess.run(['which','ffmpeg'],capture_output=True).returncode==0: status='uploaded_audio_pending'
+    except Exception: status='parse_failed'
     file_id = add_file(user["id"], file.filename or "unnamed", safe_name, file.content_type or "application/octet-stream", total)
-    return {"id": file_id, "name": file.filename, "size_bytes": total, "status": "uploaded"}
+    if text:
+        with connect() as db: db.execute("INSERT OR REPLACE INTO file_text(file_id,text,created_at) VALUES(?,?,?)",(file_id,text,__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()))
+    return {"id": file_id, "name": file.filename, "size_bytes": total, "status": status, "text_chars": len(text)}
+
+@app.get("/api/files/{file_id}/text")
+async def file_text(file_id: int, ai_team_session: str | None = Cookie(default=None)):
+    user=current_user(ai_team_session)
+    row=get_file(user["id"],file_id)
+    if not row: raise HTTPException(404,"文件不存在。")
+    with connect() as db: text=db.execute("SELECT text FROM file_text WHERE file_id=?",(file_id,)).fetchone()
+    if not text: raise HTTPException(409,"该文件还没有可提取文本；视频转写尚未完成。")
+    return {"text":text["text"]}
 
 @app.delete("/api/files/{file_id}")
 async def delete_uploaded_file(file_id: int, ai_team_session: str | None = Cookie(default=None)):
@@ -236,8 +264,12 @@ async def chat(request: ChatRequest, ai_team_session: str | None = Cookie(defaul
     day = today()
     try: call_id = reserve_call(user, MINIMAX_MODEL, day)
     except ValueError as exc: raise HTTPException(429, str(exc)) from None
+    conversation=get_or_create_conversation(user["id"])
+    context=recent_messages(conversation["id"], 12)
+    context_text="\n".join(f"{row['role']}: {row['content']}" for row in context)
+    enriched_prompt=("这是同一位用户的连续对话，请参考历史上下文。\n"+context_text+"\n\n当前问题：\n"+prompt) if context_text else prompt
     try:
-        result = await run_orchestration(prompt, mode=request.mode)
+        result = await run_orchestration(enriched_prompt, mode=request.mode)
     except ProviderError as exc:
         finish_call(call_id, "failed")
         raise HTTPException(exc.status, str(exc)) from None
@@ -245,6 +277,8 @@ async def chat(request: ChatRequest, ai_team_session: str | None = Cookie(defaul
         finish_call(call_id, "failed")
         raise HTTPException(502, "模型请求未完成，请稍后重试。") from None
     finish_call(call_id, "success", result.prompt_tokens, result.completion_tokens, result.total_tokens, result.latency_ms)
+    add_message(conversation["id"], "user", prompt)
+    add_message(conversation["id"], "assistant", result.answer)
     return {"answer": result.answer, "model": result.model, "plan": result.plan, "stages": result.stages, "usage": {"total_tokens": result.total_tokens}, "latency_ms": result.latency_ms}
 
 @app.get("/")

@@ -24,9 +24,14 @@ def initialize():
         CREATE INDEX IF NOT EXISTS idx_calls_user_day ON calls(user_id, day);
         CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, original_name TEXT NOT NULL, stored_name TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'uploaded', created_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_files_user ON files(user_id, created_at);
+        CREATE TABLE IF NOT EXISTS file_text (file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE, text TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS conversations (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL DEFAULT '默认对话', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS plan_orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), plan_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, decided_at TEXT);
         CREATE INDEX IF NOT EXISTS idx_plan_orders_user ON plan_orders(user_id, created_at);
         """)
+        try: db.execute("ALTER TABLE files ADD COLUMN extracted_text TEXT")
+        except sqlite3.OperationalError: pass
 
 def now(): return datetime.now(timezone.utc)
 
@@ -118,6 +123,19 @@ def get_file(user_id, file_id):
 
 def remove_file(user_id, file_id):
     with connect() as db: db.execute("DELETE FROM files WHERE id=? AND user_id=?",(file_id,user_id))
+
+def get_or_create_conversation(user_id):
+    with connect() as db:
+        row=db.execute("SELECT * FROM conversations WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",(user_id,)).fetchone()
+        if row: return row
+        n=now().isoformat(); cur=db.execute("INSERT INTO conversations(user_id,created_at,updated_at) VALUES(?,?,?)",(user_id,n,n)); return db.execute("SELECT * FROM conversations WHERE id=?",(cur.lastrowid,)).fetchone()
+
+def recent_messages(conversation_id, limit=12):
+    with connect() as db: return list(reversed(db.execute("SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT ?",(conversation_id,limit)).fetchall()))
+
+def add_message(conversation_id, role, content):
+    with connect() as db:
+        n=now().isoformat(); db.execute("INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,?,?,?)",(conversation_id,role,content,n)); db.execute("UPDATE conversations SET updated_at=? WHERE id=?",(n,conversation_id))
 
 def create_plan_order(user_id, plan_id):
     with connect() as db:
