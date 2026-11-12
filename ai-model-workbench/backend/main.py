@@ -18,6 +18,7 @@ from .rate_limit import check_and_record, initialize as initialize_rate_limit
 from .metrics import network_history, usage_snapshot
 from .plans import PLANS
 from .store import add_file, add_message, authenticate, connect, create_plan_order, create_session, create_user, decide_plan_order, delete_session, finish_call, get_file, get_or_create_conversation, initialize, list_files, list_plan_orders, list_users, recent_messages, remove_file, reserve_call, today, update_user, usage, user_for_session, username_exists
+from .speech import CONVERTIBLE_SUFFIXES, MAX_AUDIO_BYTES, SpeechError, transcribe
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -53,7 +54,8 @@ class PlanRequest(BaseModel):
 class PlanDecision(BaseModel):
     approve: bool
 
-ALLOWED_UPLOADS = {".pdf", ".docx", ".txt", ".md", ".mp4", ".mov", ".mp3", ".wav", ".png", ".jpg", ".jpeg", ".webp"}
+ALLOWED_UPLOADS = {".pdf", ".docx", ".txt", ".md", ".mp4", ".mov", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".aiff", ".webm", ".png", ".jpg", ".jpeg", ".webp"}
+AUDIO_UPLOADS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".aiff", ".webm", ".mp4", ".mov"}
 IMAGE_UPLOADS = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
@@ -135,8 +137,15 @@ async def upload_file(file: UploadFile = File(...), ai_team_session: str | None 
     try:
         text=extract_document_text(destination, suffix)
         if text: status='parsed'
-        elif suffix in {'.mp4','.mov','.mp3','.wav'} and subprocess.run(['which','ffmpeg'],capture_output=True).returncode==0: status='uploaded_audio_pending'
+        elif suffix in AUDIO_UPLOADS: status='uploaded_audio_pending'
     except Exception: status='parse_failed'
+    if not text and suffix in AUDIO_UPLOADS:
+        try:
+            spoken=await transcribe(destination.read_bytes(), safe_name)
+            if spoken['text']:
+                text=spoken['text']; status='transcribed'
+        except Exception:
+            status='uploaded_audio_pending'
     file_id = add_file(user["id"], file.filename or "unnamed", safe_name, file.content_type or "application/octet-stream", total)
     if text:
         with connect() as db: db.execute("INSERT OR REPLACE INTO file_text(file_id,text,created_at) VALUES(?,?,?)",(file_id,text,__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()))
@@ -148,7 +157,7 @@ async def file_text(file_id: int, ai_team_session: str | None = Cookie(default=N
     row=get_file(user["id"],file_id)
     if not row: raise HTTPException(404,"文件不存在。")
     with connect() as db: text=db.execute("SELECT text FROM file_text WHERE file_id=?",(file_id,)).fetchone()
-    if not text: raise HTTPException(409,"该文件还没有可提取文本；视频转写尚未完成。")
+    if not text: raise HTTPException(409,"该文件还没有可提取文本；音频转写可能未完成，请稍后重试，或确认服务器可调用语音识别。")
     return {"text":text["text"]}
 
 @app.delete("/api/files/{file_id}")
@@ -179,6 +188,26 @@ async def analyze_image(prompt: str = Form(default="请分析这张图片，描�
         finish_call(call_id,"failed"); raise HTTPException(502,"图片分析失败，请稍后重试。") from None
     finish_call(call_id,"success",result.prompt_tokens,result.completion_tokens,result.total_tokens,result.latency_ms)
     return {"answer":result.text,"model":result.model,"usage":{"total_tokens":result.total_tokens},"latency_ms":result.latency_ms}
+
+@app.post("/api/speech-to-text")
+async def speech_to_text(file: UploadFile = File(...), language: str = Form(default=""), ai_team_session: str | None = Cookie(default=None)):
+    user = current_user(ai_team_session)
+    if not os.getenv("MINIMAX_API_KEY", "").strip(): raise HTTPException(503, "服务尚未配置 MiniMax API Key。")
+    suffix = Path(file.filename or "").suffix.lower() or ".wav"
+    if suffix not in CONVERTIBLE_SUFFIXES: raise HTTPException(400, "暂不支持这种音频格式。")
+    audio = await file.read()
+    if len(audio) > MAX_AUDIO_BYTES: raise HTTPException(413, "录音不能超过 25 MB。")
+    if len(audio) < 800: raise HTTPException(400, "录音太短，没有识别到语音。")
+    try: call_id = reserve_call(user, "asr-1.0", today())
+    except ValueError as exc: raise HTTPException(429, str(exc)) from None
+    try:
+        result = await transcribe(audio, file.filename or f"audio{suffix}", language.strip())
+    except SpeechError as exc:
+        finish_call(call_id, "failed"); raise HTTPException(exc.status, str(exc)) from None
+    except Exception:
+        finish_call(call_id, "failed"); raise HTTPException(502, "语音识别未完成，请稍后重试。") from None
+    finish_call(call_id, "success", 0, 0, 0, result["latency_ms"])
+    return {"text": result["text"], "duration": result["duration"], "model": result["model"], "latency_ms": result["latency_ms"], "trace_id": result["trace_id"]}
 
 @app.get("/api/admin/users")
 async def admin_users(ai_team_session: str | None = Cookie(default=None)):

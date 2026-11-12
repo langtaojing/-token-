@@ -30,3 +30,135 @@ byId("register-btn").onclick=async()=>{const message=byId("register-msg"),button
 byId("logout-btn").onclick=async()=>{await api("/api/logout",{method:"POST"});location.reload()};
 byId("send-btn").onclick=async()=>{const prompt=byId("prompt").value.trim();if(!prompt)return;const mode=byId("chat-mode").value;const button=byId("send-btn");button.disabled=true;byId("result").textContent=mode==="deep"?"正在规划 → 执行 → 复查…":"正在生成回答…";try{const data=await api("/api/chat",{method:"POST",body:JSON.stringify({prompt,mode})});byId("result").textContent="【"+data.model+" · "+(mode==="deep"?"深度处理":"快速回答")+"】\n阶段："+(data.stages||[]).join(" → ")+"\nToken："+data.usage.total_tokens+" · 耗时："+data.latency_ms+"ms\n\n"+data.answer;await refreshSession()}catch(e){byId("result").textContent="请求失败："+e.message}finally{button.disabled=false}};refreshSession();
 setInterval(()=>{if(!byId("admin-panel").classList.contains("trial-hidden")){if(!document.querySelector('[data-admin-section="network"]').classList.contains("trial-hidden"))loadNetworkHistory();else loadDashboard()}},30*60*1000);
+
+/* ---------- 语音输入：浏览器本机采集 → 16 kHz 单声道 WAV → MiniMax asr-1.0 转写 ---------- */
+(function () {
+  const button = byId("mic-btn");
+  const status = byId("voice-status");
+  if (!button || !status) return;
+
+  const MAX_SECONDS = 60;
+  const TARGET_RATE = 16000;
+  let recorder = null, stream = null, chunks = [], timer = null, seconds = 0, recording = false, busy = false;
+
+  const pad = (n) => String(n).padStart(2, "0");
+  const clock = (n) => pad(Math.floor(n / 60)) + ":" + pad(n % 60);
+  const say = (text, tone) => { status.textContent = text; status.className = "trial-muted" + (tone ? " voice-" + tone : ""); };
+  const supported = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder && (window.AudioContext || window.webkitAudioContext));
+
+  function encodeWav(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const write = (offset, text) => { for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i)); };
+    write(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); write(8, "WAVE");
+    write(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+    write(36, "data"); view.setUint32(40, samples.length * 2, true);
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++) {
+      const sample = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += 2;
+    }
+    return new Blob([view], { type: "audio/wav" });
+  }
+
+  async function toWav16k(blob) {
+    const arrayBuffer = await blob.arrayBuffer();
+    const Context = window.AudioContext || window.webkitAudioContext;
+    const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!Offline) throw new Error("browser-no-offline-audio");
+    const context = new Context();
+    let decoded;
+    try { decoded = await context.decodeAudioData(arrayBuffer); } finally { context.close().catch(() => {}); }
+    const frames = Math.max(1, Math.round(decoded.duration * TARGET_RATE));
+    const offline = new Offline(1, frames, TARGET_RATE);
+    const source = offline.createBufferSource();
+    source.buffer = decoded;
+    source.connect(offline.destination);
+    source.start();
+    const rendered = await offline.startRendering();
+    return encodeWav(rendered.getChannelData(0), TARGET_RATE);
+  }
+
+  function guessName(type) {
+    if (!type) return "voice.webm";
+    if (type.indexOf("wav") >= 0) return "voice.wav";
+    if (type.indexOf("mp4") >= 0) return "voice.mp4";
+    if (type.indexOf("ogg") >= 0) return "voice.ogg";
+    return "voice.webm";
+  }
+
+  async function upload(blob, filename) {
+    const form = new FormData();
+    form.append("file", blob, filename);
+    const response = await fetch("/api/speech-to-text", { method: "POST", credentials: "include", body: form });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "语音识别失败");
+    return data;
+  }
+
+  async function finish() {
+    const raw = new Blob(chunks, { type: (recorder && recorder.mimeType) || "audio/webm" });
+    chunks = [];
+    busy = true;
+    button.disabled = true;
+    say("正在识别…", "busy");
+    try {
+      let payload = raw, filename = guessName(raw.type);
+      try { payload = await toWav16k(raw); filename = "voice.wav"; } catch (error) { /* 浏览器转码失败时退回原始格式 */ }
+      const data = await upload(payload, filename);
+      const text = (data.text || "").trim();
+      if (!text) { say("没有识别到语音内容，请靠近麦克风再试一次。", "error"); return; }
+      byId("prompt").value = text;
+      say("识别完成：" + text.length + " 字 · 耗时 " + data.latency_ms + "ms，已自动发送。", "ok");
+      byId("send-btn").click();
+    } catch (error) {
+      say("语音识别失败：" + (error && error.message ? error.message : "请稍后重试"), "error");
+    } finally {
+      busy = false;
+      button.disabled = false;
+    }
+  }
+
+  function stop() {
+    if (!recording) return;
+    recording = false;
+    if (timer) clearInterval(timer);
+    try { if (recorder && recorder.state !== "inactive") recorder.stop(); } catch (error) { }
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+    button.classList.remove("recording");
+    button.textContent = "语音输入";
+  }
+
+  async function start() {
+    if (busy || recording) return;
+    if (!supported()) { say("当前浏览器不支持录音，请使用 Chrome、Edge 或 Safari。", "error"); return; }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch (error) {
+      say("无法使用麦克风：" + (error && error.name === "NotAllowedError" ? "权限被拒绝，请在地址栏允许麦克风后重试" : (error && error.message) || "未知错误"), "error");
+      return;
+    }
+    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/ogg;codecs=opus", "audio/ogg"];
+    const mime = candidates.find((type) => { try { return MediaRecorder.isTypeSupported(type); } catch (error) { return false; } });
+    recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    chunks = [];
+    seconds = 0;
+    recording = true;
+    recorder.ondataavailable = (event) => { if (event.data && event.data.size) chunks.push(event.data); };
+    recorder.onstop = () => { finish(); };
+    recorder.start();
+    button.classList.add("recording");
+    button.textContent = "停止录音 00:00";
+    say("正在录音…说完后再点一次按钮结束。", "busy");
+    timer = setInterval(() => {
+      seconds += 1;
+      button.textContent = "停止录音 " + clock(seconds);
+      if (seconds >= MAX_SECONDS) stop();
+    }, 1000);
+  }
+
+  button.addEventListener("click", () => { if (recording) stop(); else start(); });
+  window.addEventListener("pagehide", () => { if (timer) clearInterval(timer); if (stream) stream.getTracks().forEach((track) => track.stop()); });
+})();

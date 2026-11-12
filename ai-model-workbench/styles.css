@@ -24,3 +24,13 @@
 @media(min-width:900px){.trial-admin:not(.trial-hidden){display:grid;grid-template-columns:170px minmax(0,1fr);align-items:start}.trial-admin #admin-nav{grid-column:1;grid-row:1 / span 4;position:sticky;top:16px;display:flex;flex-direction:column}.trial-admin [data-admin-section]{grid-column:2}}
 
 .image-analyzer{padding:16px;border:1px solid #365781;border-radius:12px;background:#12233b;margin-bottom:18px}.image-analyzer h3{margin-top:0}.image-analyzer input{display:block;width:100%;margin-bottom:10px}.image-analyzer button{margin-bottom:4px}
+
+.voice-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0 6px}
+.voice-bar .trial-btn{min-width:104px}
+.trial-btn.recording{background:#b3261e;border-color:#b3261e;color:#fff}
+.trial-btn.recording:hover{background:#8f1e18;border-color:#8f1e18}
+#voice-status{font-size:13px;line-height:1.5}
+#voice-status.voice-busy{color:#1b4f8a}
+#voice-status.voice-ok{color:#1f7a4d}
+#voice-status.voice-error{color:#b3261e}
+@media (max-width:640px){.voice-bar .trial-btn{width:100%}}
